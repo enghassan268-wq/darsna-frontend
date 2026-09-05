@@ -4107,6 +4107,20 @@
     if (known) schoolIn.value = known;
   } catch (e) {}
 
+  // Shareable one-click activation link (added alongside Phase 6h public
+  // hosting): ?school=...&key=... in the URL prefills both fields, and — if
+  // this school turns out not to be active yet — submits the form
+  // automatically once, so opening the link is the whole activation, no
+  // typing or pasting required. If the school is already active (a
+  // recipient re-opens the same link later), checkLicense() below resolves
+  // active first and this never fires, so redeeming an already-used key a
+  // second time is not something a normal recipient will hit.
+  var urlParams  = new URLSearchParams(window.location.search);
+  var urlSchool  = (urlParams.get("school") || "").trim();
+  var urlKey     = (urlParams.get("key") || "").trim();
+  if (urlSchool) schoolIn.value = urlSchool;
+  if (urlKey) keyIn.value = urlKey;
+
   form.addEventListener("submit", function(ev){
     ev.preventDefault();
     var schoolId = (schoolIn.value || "").trim();
@@ -4136,6 +4150,13 @@
   Gate.checkLicense().then(function(res){
     if (res && res.active) { setState("active"); return; }
     lock(res && res.reason);
+    if (urlSchool && urlKey) {
+      // One-time auto-submit for the shareable link case above. A native
+      // form.submit() would skip our own submit listener entirely, so this
+      // dispatches a real "submit" event through the same code path a
+      // manual click takes — same validation, same error handling.
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    }
   })["catch"](function(){
     lock("license_service_unreachable");
   });
