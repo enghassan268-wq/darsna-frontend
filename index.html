@@ -487,6 +487,12 @@
   .license-msg{ margin:12px 0 0; font-size:13.5px; min-height:20px; }
   .license-msg.bad{ color:var(--bad); }
   .license-msg.good{ color:var(--good); }
+
+  /* Casual copying deterrent (Phase 6h+). Read the note beside the matching
+     JS block near the end of this file before touching either — this is
+     explicitly NOT real protection, see that note for why. */
+  body{ -webkit-user-select:none; -moz-user-select:none; user-select:none; }
+  input, textarea{ -webkit-user-select:text; -moz-user-select:text; user-select:text; }
 </style>
 
 <!-- ======================= LICENSE GATE (Phase 6b/6c) =======================
@@ -4160,5 +4166,30 @@
   })["catch"](function(){
     lock("license_service_unreachable");
   });
+})();
+</script>
+
+<!-- ================================================================
+     Casual copying deterrent (Phase 6h+) — NOT real protection.
+     ================================================================
+     This disables right-click and text copy/cut in the browser. It stops
+     a student from casually selecting a paragraph and pasting it into
+     WhatsApp — nothing more. It does NOT and CANNOT:
+       - block screenshots or screen recording (no web page can; the OS,
+         a phone camera, or a second device always can capture the screen)
+       - stop anyone who opens browser dev tools, disables JavaScript, or
+         views page source
+       - stop a key/schoolId being shared with another device — this
+         page's access check only asks "is this schoolId licensed?", not
+         "is this the same device that redeemed it" (that is a separate,
+         unbuilt feature — device binding — see the note Hassan and Claude
+         discussed in chat before adding this).
+     Treat this as a speed bump for casual sharing, never as security. -->
+<script>
+(function(){
+  "use strict";
+  document.addEventListener("contextmenu", function(e){ e.preventDefault(); });
+  document.addEventListener("copy", function(e){ e.preventDefault(); });
+  document.addEventListener("cut", function(e){ e.preventDefault(); });
 })();
 </script>
