@@ -15,7 +15,7 @@
 <script>document.documentElement.setAttribute("data-license", "checking");</script>
 <!-- Public deploy (Phase 6h): points the License Gate at the real deployed
      backend instead of its http://localhost:4500 default. Nothing in
-     license-gate.js itself changes — it already reads this global if set. -->
+     license-gate.js itself changes -- it already reads this global if set. -->
 <script>window.DARSNA_LICENSE_API_BASE = "https://darsna-license-backend.onrender.com";</script>
 <script src="engine/license-gate.js"></script>
 
@@ -1516,10 +1516,15 @@
 
   // ---------------- student identity (lightweight, not real auth) ----------------
   var STUDENT_ID_KEY = "darsna_student_id", STUDENT_NAME_KEY = "darsna_student_name";
+  // Same key license-gate.js already writes (Phase 6g) — read-only here,
+  // so a school's licensed identity is also what scopes its students'
+  // Checkpoint/development data on the backend. No second identity system.
+  var SCHOOL_ID_KEY = "darsna_school_id";
   function lsGet(k){ try { return localStorage.getItem(k); } catch (e) { return null; } }
   function lsSet(k, v){ try { localStorage.setItem(k, v); } catch (e) {} }
   function getStudentId(){ return lsGet(STUDENT_ID_KEY); }
   function getStudentName(){ return lsGet(STUDENT_NAME_KEY); }
+  function getSchoolId(){ return lsGet(SCHOOL_ID_KEY); }
   function ensureStudentId(){
     var id = getStudentId();
     if (!id) { id = "s_" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36); lsSet(STUDENT_ID_KEY, id); }
@@ -1644,10 +1649,79 @@
     };
   }
 
-  // ---------------- db capability (declared at publish time) ----------------
+  // ---------------- backend API repository (Phase 7a — the one this licensed
+  // copy actually uses). makeArtifactDbRepository() above is the Cowork
+  // Artifact's own implementation and is dead code here — this file never
+  // runs inside a claude.ai Artifact, so window.claude never exists.
+  //
+  // Same Repository seam: every method has the exact same name/return shape
+  // as makeArtifactDbRepository()'s, so nothing in Scoring, Error Analysis,
+  // Weakness Detection or Student Development needed to change. Talks to
+  // backend/server.js (the SAME server the License Gate already calls),
+  // which uses its Supabase service-role key server-side — this page never
+  // holds a database credential of any kind. schoolId comes from
+  // getSchoolId() (Phase 6g's own localStorage key), so every write is
+  // scoped to the licensed school automatically.
+  function makeBackendApiRepository(apiBase){
+    function apiGet(path){
+      return fetch(apiBase + path).then(function(r){ return r.json(); });
+    }
+    function apiPost(path, body){
+      return fetch(apiBase + path, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body)
+      }).then(function(r){ return r.json(); });
+    }
+    return {
+      ensureStudent: function(id, name){
+        var sid = getSchoolId();
+        if (!sid) return Promise.resolve();
+        return apiPost("/api/student/ensure", { schoolId: sid, studentId: id, name: name })["catch"](function(){});
+      },
+      saveCheckpointAttempt: function(attempt){
+        var sid = getSchoolId();
+        if (!sid) return Promise.reject(new Error("no schoolId — is this device licensed?"));
+        return apiPost("/api/checkpoint-attempt", { schoolId: sid, attempt: attempt }).then(function(res){
+          if (res && res.error) throw new Error(res.error);
+          return res.attempt;
+        });
+      },
+      getAttemptsByStudent: function(studentId){
+        // The backend already aggregates attempts + topics in one call
+        // (getWeaknessProfile) — reuse it rather than adding a second route.
+        return this.getWeaknessProfile(studentId).then(function(p){ return p.attempts; });
+      },
+      getWeaknessProfile: function(studentId){
+        var sid = getSchoolId();
+        if (!sid) return Promise.resolve({ attempts: [], topics: [] });
+        return apiGet("/api/weakness-profile?schoolId=" + encodeURIComponent(sid) + "&studentId=" + encodeURIComponent(studentId));
+      },
+      saveDevelopmentExercise: function(ex){
+        var sid = getSchoolId();
+        if (!sid) return Promise.resolve();
+        return apiPost("/api/development-exercise", { schoolId: sid, exercise: ex })["catch"](function(){});
+      },
+      getDevelopmentExercisesByStudent: function(studentId){
+        var sid = getSchoolId();
+        if (!sid) return Promise.resolve([]);
+        return apiGet("/api/development-exercises?schoolId=" + encodeURIComponent(sid) + "&studentId=" + encodeURIComponent(studentId)).then(function(res){
+          return (res && res.exercises) || [];
+        });
+      }
+    };
+  }
+
+  // ---------------- Repo selection ----------------
+  // Same base URL the License Gate already uses (window.DARSNA_LICENSE_API_BASE,
+  // set once in a small <script> block before this file loads — see
+  // backend/DEPLOY.md) — one deployed server, one configured URL, for both
+  // licensing and Student Development. Falls back to window.claude's `db`
+  // capability only for the (currently unused) case this file is ever loaded
+  // inside a Cowork Artifact instead.
   var Repo = null;
   (function initRepo(){
-    if (window.claude && typeof window.claude.use === "function"){
+    var apiBase = window.DARSNA_LICENSE_API_BASE || "http://localhost:4500";
+    if (apiBase) { Repo = makeBackendApiRepository(apiBase); }
+    if (!Repo && window.claude && typeof window.claude.use === "function"){
       window.claude.use("db").then(function(ns){ if (ns) Repo = makeArtifactDbRepository(ns); })["catch"](function(){ Repo = null; });
     }
   })();
@@ -3997,10 +4071,647 @@
           q:"He studied hard. He ______ fail the exam.",
           opts:["shouldn't","should","mustn't","doesn't have to"], correct:0 }
       ]
+    },
+
+
+    jobs: {
+      label: "Unit 3: Jobs",
+      // Real lesson division of Unit 3, taken directly from the Student's
+      // Book unit-opening topic list (PDF page 25 / indb 29) and confirmed
+      // lesson-by-lesson against the Activity Book's own "Lesson N: ..."
+      // headers (AB PDF pages 49-72) — both sources verified by opening the
+      // actual PDF pages directly (pdftotext -layout), not the noisier OCR
+      // reconstruction used earlier for other files.
+      lessons: [
+        { n:1, title:"الدرس 1 — مفردات المهن والصناعات" },
+        { n:2, title:"الدرس 2 — {{Zero and First Conditional}}" },
+        { n:3, title:"الدرس 3 — {{Second Conditional}}" },
+        { n:4, title:"الدرس 4 — {{Reported Speech}}" },
+        { n:5, title:"الدرس 5 — {{I wish}} / {{If only}}" },
+        { n:6, title:"الدرس 6 — {{Third Conditional}}" },
+        { n:7, title:"الدرس 7 — قراءة: {{Learn English in the UK}}" },
+        { n:8, title:"الدرس 8 — قراءة: {{Summer jobs}}" },
+        { n:9, title:"الدرس 9 — قراءة: {{Focus on careers – conference interpreter}}" }
+      ],
+      blocks: [
+        // ================= Lesson 1 — careers & industries =================
+        { type:"vocab", tag:"جدول مفردات", lesson:1, title:"مفردات الصناعات والمهن",
+          rows:[
+            ["architecture","الهندسة المعمارية"],["the aviation industry","صناعة الطيران"],
+            ["engineering","الهندسة"],["the environment","البيئة"],
+            ["fine art","الفنون الجميلة"],["information technology","تكنولوجيا المعلومات"],
+            ["the media","الإعلام"],["medicine","الطب"],
+            ["the oil industry","صناعة النفط"],["scientific research","البحث العلمي"],
+            ["teaching","التدريس"],["the tourist industry","صناعة السياحة"],
+            ["architect","مهندس معماري"],["cameraman","مصوّر أفلام أو تلفزيون"],
+            ["engineer","مهندس"],["flight attendant","مضيف/مضيفة طيران"],
+            ["journalist","صحفي"],["lawyer","محامٍ"],
+            ["lifeguard","منقذ سباحة"],["pilot","طيار"],
+            ["plumber","سبّاك"],["surgeon","جرّاح"],
+            ["secretary","سكرتير"],["tour guide","مرشد سياحي"]
+          ] },
+        { type:"concept", tag:"الفكرة", lesson:1, title:"تعريف المهنة باستخدام {{who}}",
+          text:"للسؤال عن اسم مهنة انطلاقاً من وصف عملها نستخدم {{What do you call a person who}} + فعل؟، أو نسأل عن معنى مهنة معروفة بالفعل باستخدام {{What's a/an}} + اسم المهنة؟ وفي كلتا الحالتين تكون الإجابة بجملة تعريف تبدأ بـ {{It's/He's/She's someone who}} + فعل — وهذا الأسلوب في التعريف بالـ {{who}} هو نفسه المستخدم في عمود «الوظائف والمهام» بكتاب النشاط.",
+          examples:[
+            { text:"What do you call a person who designs buildings? An architect.", term:"who designs buildings" },
+            { text:"What's an architect? It's someone who designs buildings.", term:"someone who" },
+            { text:"A lifeguard is someone who is responsible for the safety of swimmers.", term:"who is responsible for" }
+          ] },
+        { type:"warn", tag:"تنبيه", lesson:1, title:"خطأ شائع بين الطلاب — {{the}} مع اسم المجال لا مع اسم المهنة",
+          text:"أسماء بعض المجالات/الصناعات في القائمة تحتاج أداة التعريف {{the}} دائماً: {{the aviation industry}}، {{the tourist industry}}، {{the oil industry}}، {{the media}}، {{the environment}} — بينما أسماء مجالات أخرى لا تأخذ {{the}} إطلاقاً: {{architecture}}، {{engineering}}، {{medicine}}، {{teaching}}، {{fine art}}، {{information technology}}، {{scientific research}}. لا توجد قاعدة صوتية تميّز بينها؛ الأصوب حفظ كل اسم مجال مع أداته (أو غيابها) كما ورد في القائمة نفسها." },
+        // ================= Lesson 2 — Zero & First Conditional =================
+        { type:"formula", tag:"الصيغة", lesson:2, title:"صيغة {{Zero}} و{{First Conditional}}",
+          lines:[
+            [ {t:"( Zero )  "}, {t:"If",role:"target"}, {t:" + "}, {t:"Subject",role:"subject"}, {t:" + "}, {t:"present simple",role:"verb"}, {t:" , "}, {t:"Subject",role:"subject"}, {t:" + "}, {t:"present simple",role:"verb"} ],
+            [ {t:"( First )  "}, {t:"If",role:"target"}, {t:" + "}, {t:"Subject",role:"subject"}, {t:" + "}, {t:"present simple",role:"verb"}, {t:" , "}, {t:"Subject",role:"subject"}, {t:" + "}, {t:"will/won't",role:"target"}, {t:" + "}, {t:"verb",role:"verb"} ]
+          ],
+          examples:[
+            [ {t:"If",role:"target"}, {t:" you "}, {t:"don't water",role:"verb"}, {t:" plants, they "}, {t:"die",role:"verb"}, {t:"."} ],
+            [ {t:"If",role:"target"}, {t:" it's raining tomorrow, we "}, {t:"won't go",role:"target"}, {t:" for a picnic."} ],
+            [ {t:"I'll be at home around four, "}, {t:"unless",role:"target"}, {t:" there's an emergency at work."} ]
+          ],
+          altExamples:[
+            [
+              [ {t:"If",role:"target"}, {t:" you "}, {t:"pass",role:"verb"}, {t:", what "}, {t:"will",role:"target"}, {t:" you do next year?"} ],
+              [ {t:"If",role:"target"}, {t:" you "}, {t:"get",role:"verb"}, {t:" here early, we "}, {t:"can",role:"target"}, {t:" work on our projects together."} ]
+            ]
+          ],
+          note:"{{unless}} تعني {{if not}} — لهذا لا تُستخدم أبداً مع نفي إضافي في نفس الجملة." },
+        { type:"warn", tag:"تنبيه", lesson:2, title:"خطأ شائع بين الطلاب — {{will}} داخل جملة {{if}}",
+          text:"لا تستخدم {{will}} أبداً داخل جملة الشرط نفسها ({{if}} {{clause}}) حتى لو كانت الجملة كلها تتحدث عن المستقبل: نقول {{If it rains tomorrow}} وليس {{If it will rain tomorrow}} — فعل {{will}} يظهر فقط في الجملة الرئيسية (جواب الشرط)." },
+        { type:"examModel", tag:"نموذج امتحاني", tag2:null, lesson:2, title:"نمط سؤال وزاري — اختيار من متعدد ({{unless}})",
+          note:"سؤال حقيقي من مراجعة الوحدة في كتاب النشاط نفسه ({{Activity Book}}، صفحة 70) — نمط «اختر الخيار الصحيح» يتكرر بنفس الشكل في الامتحان الوزاري.",
+          instruction:"اختر الإجابة الصحيحة:",
+          q:"We ______ arrive on time unless we take the next bus. Hurry up!",
+          opts:["won't","will","don't","aren't"], correct:0,
+          steps:[
+            "افهم معنى {{unless}} أولاً: تعني {{if not}} (إلّا إذا / إذا لم) — أي أن الجملة تقول: «لن نصل في الوقت المحدد إذا لم نأخذ الباص القادم».",
+            "بما أن الجملة الرئيسية (قبل {{unless}}) هي جواب الشرط في {{First Conditional}}، يجب أن يكون فعلها بصيغة {{will/won't}} + فعل مجرد — والمعنى هنا سلبي (لن نصل)، فالفعل الصحيح هو {{won't}}.",
+            "راجع كل خيار خاطئ على حدة: [[will]] تعطي معنى معاكساً تماماً (سنصل حتماً حتى لو لم نأخذ الباص)، وهذا يناقض التحذير «{{Hurry up!}}» الموجود في نهاية الجملة. [[don't]] و[[aren't]] كلاهما فعل مساعد بصيغة المضارع البسيط، لا يصلحان في جواب الشرط الذي يحتاج {{will/won't}} تحديداً.",
+            "بعد استبعاد الخيارات الثلاثة كل واحد بسببه الخاص، يبقى الخيار المطابق تماماً لقاعدة {{First Conditional}} ولمنطق الجملة (تحذير من التأخر): [[won't]].",
+            "تأكيد أخير: أعد قراءة الجملة كاملة — {{We}} [[won't]] {{arrive on time unless we take the next bus. Hurry up!}} — الجملة الآن منطقية: عدم أخذ الباص القادم يعني عدم الوصول في الوقت المحدد."
+          ] },
+        { type:"examModel", tag:"نموذج امتحاني", lesson:2, title:"نمط سؤال وزاري — إكمال الفعل الصحيح ({{Zero/First Conditional}})",
+          note:"سؤال حقيقي مبني على تمرين من كتاب النشاط ({{Activity Book}})، الوحدة 3، الدرس 2 — تحويل الفعل بين القوسين للصيغة الصحيحة ضمن جملة شرطية.",
+          instruction:"اختر الصيغة الصحيحة للفعل بين القوسين: {{Unless he (make) a big effort this term, he won't get through the end-of-year exams.}}",
+          q:"Unless he ______ a big effort this term, he won't get through the end-of-year exams.",
+          opts:["makes","made","will make","is making"], correct:0,
+          steps:[
+            "لاحظ أن الجملة تحتوي فعلاً على جواب الشرط بصيغة {{won't get through}} — وهذا يخبرنا أن الجملة كلها في نمط {{First Conditional}}، وأن الفراغ هو فعل جملة الشرط ({{if/unless}} {{clause}}).",
+            "تذكّر القاعدة: فعل جملة الشرط في {{First Conditional}} يكون دائماً بصيغة المضارع البسيط ({{present simple}})، مهما كان زمن جواب الشرط يشير إلى المستقبل.",
+            "طبّق القاعدة على الفاعل {{he}} (هو/غائب مفرد): صيغة المضارع البسيط الصحيحة معه تُضاف لها {{s}} — فتكون {{makes}} بالضبط.",
+            "راجع كل خيار خاطئ على حدة: [[made]] ماضٍ بسيط، وهذا زمن غير مناسب لجملة الشرط في {{First Conditional}}. [[will make]] خطأ لأن {{will}} لا تظهر أبداً داخل جملة {{if/unless}} نفسها، بل فقط في جواب الشرط. [[is making]] مضارع مستمر، وهذا الزمن غير مستخدم في هذه الصيغة القياسية.",
+            "بعد استبعاد الخيارات الثلاثة كل واحد بسببه الخاص، يبقى الخيار المطابق تماماً لقاعدة {{First Conditional}}: [[makes]].",
+            "تأكيد أخير: أعد قراءة الجملة كاملة — {{Unless he}} [[makes]] {{a big effort this term, he won't get through the end-of-year exams.}} — جملة صحيحة نحوياً ومنطقية المعنى."
+          ] },
+        // ================= Lesson 3 — Second Conditional =================
+        { type:"formula", tag:"الصيغة", lesson:3, title:"صيغة {{Second Conditional}}",
+          lines:[
+            [ {t:"If",role:"target"}, {t:" + "}, {t:"Subject",role:"subject"}, {t:" + "}, {t:"past simple",role:"verb"}, {t:" , "}, {t:"Subject",role:"subject"}, {t:" + "}, {t:"would/could/might",role:"target"}, {t:" + "}, {t:"verb (stem)",role:"verb"} ]
+          ],
+          examples:[
+            [ {t:"If",role:"target"}, {t:" I "}, {t:"had",role:"verb"}, {t:" enough money, I "}, {t:"would go",role:"target"}, {t:" to Britain to study."} ],
+            [ {t:"If",role:"target"}, {t:" she "}, {t:"studied",role:"verb"}, {t:" harder, she "}, {t:"would pass",role:"target"}, {t:" her exams."} ],
+            [ {t:"If",role:"target"}, {t:" I "}, {t:"were",role:"verb"}, {t:" you, I'd "}, {t:"apply",role:"target"}, {t:" to two or three colleges."} ]
+          ],
+          altExamples:[
+            [
+              [ {t:"If",role:"target"}, {t:" I "}, {t:"was",role:"verb"}, {t:" a pilot, nobody "}, {t:"would fly",role:"target"}, {t:" with me."} ]
+            ]
+          ],
+          note:"نستخدم {{Second Conditional}} للحديث عن مواقف غير حقيقية أو غير محتملة في الحاضر/المستقبل." },
+        { type:"warn", tag:"تنبيه", lesson:3, title:"خطأ شائع بين الطلاب — {{if I were}} مقابل {{if I was}}",
+          text:"القاعدة التقليدية تفضّل {{were}} مع كل الضمائر في {{Second Conditional}} حتى مع {{I/he/she/it}} — خصوصاً في التعبير الثابت {{If I were you}}. لكن كتاب الطالب نفسه يستخدم {{If I was a pilot}} في حوار حقيقي، لأن {{was}} شائعة جداً في الكلام غير الرسمي. الأسلم في الامتحان استخدام {{were}}، لكن لا تُعتبر {{was}} خطأ فادحاً في الحديث العادي." },
+        { type:"examModel", tag:"نموذج امتحاني", lesson:3, title:"نمط سؤال وزاري — {{if I were you}}",
+          note:"سؤال حقيقي مبني على تمرين من كتاب النشاط ({{Activity Book}})، الوحدة 3، الدرس 3.",
+          instruction:"اختر الصيغة الصحيحة: {{If I (be) you, I (not ask) his advice about anything.}}",
+          q:"If I ______ you, I wouldn't ask his advice about anything.",
+          opts:["were","am","was going to be","will be"], correct:0,
+          steps:[
+            "لاحظ جواب الشرط: {{I wouldn't ask}} — فعل مساعد {{would}} في صيغة الماضي، وهذا يؤكد أن الجملة كلها في نمط {{Second Conditional}} (موقف غير حقيقي).",
+            "تذكّر القاعدة: فعل الكينونة {{be}} في جملة الشرط الخاصة بـ {{Second Conditional}} يتحول إلى {{were}} مع جميع الضمائر — وهذا التعبير تحديداً ({{If I were you}}) هو أشهر مثال ثابت على هذه القاعدة.",
+            "راجع كل خيار خاطئ على حدة: [[am]] مضارع بسيط، وهذا زمن الحاضر الحقيقي، لا يناسب موقفاً افتراضياً غير حقيقي. [[was going to be]] و[[will be]] كلاهما يشير إلى خطة أو نية مستقبلية حقيقية، وليس إلى موقف تخيّلي غير واقع أصلاً — وهذا يخالف المعنى المقصود (أنا لست أنت، وهذا افتراض بحت).",
+            "بعد استبعاد الخيارات الثلاثة كل واحد بسببه الخاص، يبقى الخيار المطابق تماماً لقاعدة {{Second Conditional}} مع فعل الكينونة: [[were]].",
+            "تأكيد أخير: أعد قراءة الجملة كاملة — [[If I were you]], {{I wouldn't ask his advice about anything.}} — تعبير افتراضي كامل وصحيح نحوياً."
+          ] },
+        { type:"examModel", tag:"نموذج امتحاني", lesson:3, title:"نمط سؤال وزاري — {{Second Conditional}} مع فعل مساعد ناقص",
+          note:"سؤال حقيقي مبني على تمرين من كتاب النشاط ({{Activity Book}})، الوحدة 3، الدرس 3.",
+          instruction:"اختر الصيغة الصحيحة: {{I (not have) to spend so long on my homework if I (have) a computer of my own.}}",
+          q:"I ______ to spend so long on my homework if I had a computer of my own.",
+          opts:["wouldn't have","don't have","won't have","haven't had"], correct:0,
+          steps:[
+            "لاحظ جملة الشرط: {{if I had a computer of my own}} — فعل بصيغة الماضي البسيط ({{had}})، وهذا تأكيد أن الجملة في نمط {{Second Conditional}} (موقف غير حقيقي حالياً: هو لا يملك حاسوباً خاصاً).",
+            "تذكّر القاعدة: جواب الشرط في {{Second Conditional}} يُصاغ بـ {{would/could/might}} + فعل مجرد — والمعنى هنا سلبي (لن يحتاج لقضاء وقت طويل)، فالصيغة الصحيحة {{wouldn't have to}}.",
+            "راجع كل خيار خاطئ على حدة: [[don't have]] و[[won't have]] كلاهما لا يستخدم {{would}} المطلوبة في جواب شرط {{Second Conditional}} — الأولى مضارع بسيط، والثانية مستقبل حقيقي، وكلاهما يخالف طبيعة الموقف الافتراضي. [[haven't had]] صيغة ماضٍ تام حاضر، غير مستخدمة إطلاقاً في هذه الصيغة.",
+            "بعد استبعاد الخيارات الثلاثة كل واحد بسببه الخاص، يبقى الخيار المطابق تماماً لقاعدة {{Second Conditional}}: [[wouldn't have]].",
+            "تأكيد أخير: أعد قراءة الجملة كاملة — {{I}} [[wouldn't have]] {{to spend so long on my homework if I had a computer of my own.}} — جملة شرطية غير حقيقية صحيحة نحوياً ومنطقية."
+          ] }
+,
+
+        // ================= Lesson 4 — Reported Speech =================
+        { type:"concept", tag:"الفكرة", lesson:4, title:"قواعد {{Reported Speech}} — الجمل الخبرية والأسئلة",
+          text:"في الجمل الخبرية والمنفية المنقولة، نؤخر الفعل خطوة واحدة نحو الماضي ({{'I'm waiting.' → She said she was waiting.}})، ونُغيّر مراجع الزمان والمكان حسب السياق ({{'here/tomorrow' → there/the next day}}). أما الأسئلة المنقولة فلا تأخذ ترتيب السؤال (لا نقلب الفاعل والفعل المساعد)، ونستخدم {{if}}/{{whether}} في أسئلة نعم/لا ({{'Have you seen Rasha?' → She asked me if/whether I had seen Rasha.}})، ويمكن أيضاً تلخيص الكلام بأفعال إبلاغ مثل {{suggest}}، {{promise}}، {{advise}}، {{refuse}}، {{agree}} بدل تكرار الكلام حرفياً.",
+          examples:[
+            { text:"'I didn't finish my part.' → She told me she hadn't finished her part.", term:"hadn't finished" },
+            { text:"'What are you doing?' → He asked me what I was doing.", term:"what I was doing" },
+            { text:"My dad suggested fixing my old bike for now.", term:"suggested" }
+          ] },
+        { type:"warn", tag:"تنبيه", lesson:4, title:"خطأ شائع بين الطلاب — ترتيب الكلمات في السؤال المنقول",
+          text:"لا تستخدم ترتيب السؤال الأصلي (فعل مساعد + فاعل) داخل السؤال المنقول: الخطأ الشائع {{She asked me what was I doing}} غير صحيح — الصحيح {{She asked me what I was doing}}، لأن السؤال المنقول يعود لترتيب الجملة الخبرية العادية (فاعل ثم فعل)، ولا يحتفظ بترتيب الاستفهام الأصلي ولا بعلامة السؤال." },
+        { type:"passage", tag:"قطعة الوحدة", lesson:4, title:"القطعة الختامية للدرس الرابع — مقابلة زها حديد من الكتاب المدرسي",
+          passageTitle:"Meet one of the most popular architects in the world! — Zaha Hadid",
+          source:"من كتاب الطالب — الوحدة الثالثة ({{Jobs}})، الدرس الرابع، صفحة 33. مقابلة صحفية حقيقية بصيغة سؤال وجواب مع المعمارية العراقية زها حديد، تُستخدم كمصدر لتمارين {{Reported Speech}} الحقيقية في كتاب النشاط (صفحات 58-59).",
+          paragraphs:[
+            "When did you decide to be an architect? It has been my dream since childhood.",
+            "Why have you had this dream? I am fascinated by the design and structure of buildings. I wanted a career that I would enjoy and that would be useful.",
+            "Can you tell me more about your background? I was born in Baghdad and studied Mathematics at the American University of Beirut. Then I moved to London and studied Architecture. I opened my own practice there in 1979. I also started to teach Architecture students in famous universities like Harvard.",
+            "What kind of buildings are you famous for? I like very modern designs, so probably my most futuristic buildings.",
+            "Have your designs won any prizes? Yes, the Pritzker Prize in 2004 — I was the first woman ever to win this — and the Stirling Prize in 2010 and 2011.",
+            "Can Iraqi women always be as successful as men in their careers? Of course. Any Iraqi woman can succeed in her chosen career if she works hard enough."
+          ],
+          explain:[
+            "منذ متى قررتِ أن تصبحي مهندسة معمارية؟ كان هذا حلمي منذ الطفولة.",
+            "لماذا راودك هذا الحلم؟ أنا مفتونة بتصميم وهيكل المباني، وأردتُ مهنة أستمتع بها وتكون مفيدة في الوقت نفسه.",
+            "أخبرينا أكثر عن خلفيتك: وُلدتُ في بغداد ودرستُ الرياضيات في الجامعة الأمريكية في بيروت، ثم انتقلتُ إلى لندن ودرستُ الهندسة المعمارية، وافتتحتُ مكتبي الخاص هناك عام 1979، وبدأتُ أيضاً تدريس طلاب الهندسة المعمارية في جامعات مشهورة مثل هارفارد.",
+            "بأي نوع من المباني اشتهرتِ؟ أحب التصاميم الحديثة جداً، لذا غالباً أشهر مبانيّ هي الأكثر مستقبلية في تصميمها.",
+            "هل فازت تصاميمك بأي جوائز؟ نعم، جائزة بريتزكر عام 2004 — كنتُ أول امرأة تفوز بها على الإطلاق — وجائزة ستيرلنغ عامي 2010 و2011.",
+            "هل يمكن للمرأة العراقية أن تكون ناجحة دائماً مثل الرجل في مسيرتها المهنية؟ بالتأكيد، يمكن لأي امرأة عراقية أن تنجح في المهنة التي تختارها إذا عملت بجد كافٍ."
+          ],
+          vocab:[
+            ["fascinated by","مفتون / مأخوذ بـ"],
+            ["background","الخلفية / النشأة"],
+            ["practice (n., architecture)","مكتب / ممارسة مهنية"],
+            ["futuristic","مستقبلي (بالتصميم)"],
+            ["prize","جائزة"],
+            ["succeed in","ينجح في"]
+          ],
+          patterns:[
+            { label:"نمط سؤال حقيقي من كتاب النشاط — تحويل جزء من المقابلة إلى كلام منقول",
+              q:"Report: 'It has been my dream since childhood.'",
+              a:"Zaha said (that) it had been her dream since childhood.",
+              note:"تمرين A حقيقي من كتاب النشاط، صفحة 58 — يطلب تحويل أربع جمل من المقابلة إلى كلام منقول." },
+            { label:"نمط سؤال حقيقي من كتاب النشاط — كتابة سؤال الصحفية بصيغة الكلام المنقول",
+              q:"Latifa asked Zaha when she had decided to be an architect.",
+              a:"(This is the model sentence given in the book itself for exercise B.)",
+              note:"من كتاب النشاط، صفحة 59 — هذه الجملة بالذات هي عنوان الدرس نفسه: {{She asked when she had decided}}." },
+            { label:"نمط سؤال حقيقي من كتاب النشاط — التلخيص بفعل إبلاغ",
+              q:"'I think it's not a good idea to speak to the manager now.' (Malik)",
+              a:"Malik advised against speaking to the manager now. / Malik suggested not speaking to the manager now.",
+              note:"من تمرين C في كتاب النشاط — إعادة صياغة كلام مباشر بفعل إبلاغ واحد بدل جملة كاملة." }
+          ] },
+        { type:"examModel", tag:"نموذج امتحاني", lesson:4, title:"نمط سؤال وزاري — سؤال منقول بـ {{Wh-}} (٢٠٢٤/١)",
+          note:"سؤال حقيقي من امتحان وزاري سابق (٢٠٢٤/١) ضمن ملازم المراجعة — نمط تحويل سؤال مباشر بأداة استفهام إلى كلام منقول.",
+          instruction:"حوّل السؤال التالي إلى كلام منقول: {{'Where has she been?' I asked.}}",
+          q:"Which is the correct reported question?",
+          opts:["I asked where she had been.","I asked where has she been.","I asked where she has been.","I asked her where had she been."], correct:0,
+          steps:[
+            "حدد فعل السؤال الأصلي وزمنه: {{has been}} (مضارع تام) — في الكلام المنقول يتراجع خطوة واحدة نحو الماضي ليصبح {{had been}} (ماضٍ تام).",
+            "تذكّر قاعدة ترتيب السؤال المنقول: لا نحتفظ بترتيب الاستفهام (فعل مساعد ثم فاعل)، بل نعيده لترتيب الجملة الخبرية العادية (فاعل ثم فعل): {{she had been}}، وليس {{had she been}}.",
+            "راجع كل خيار خاطئ على حدة: [[where has she been]] لم يُطبَّق عليه تراجع الزمن إطلاقاً (بقي {{has been}}) ولا تغيير الترتيب. [[where she has been]] صحح الترتيب لكن نسي تراجع الزمن. [[where had she been]] طبّق تراجع الزمن لكنه احتفظ بترتيب السؤال الخاطئ (فعل مساعد قبل الفاعل).",
+            "بعد استبعاد الخيارات الثلاثة كل واحد بسببه الخاص (نقص في الزمن، نقص في الزمن، خطأ في الترتيب)، يبقى الخيار الوحيد الذي طبّق القاعدتين معاً: [[I asked where she had been]].",
+            "تأكيد أخير: أعد قراءة الجملة كاملة — {{I asked}} [[where she had been]] — ترتيب خبري صحيح، وزمن متراجع بشكل صحيح."
+          ] },
+        { type:"examModel", tag:"نموذج امتحاني", lesson:4, title:"نمط سؤال وزاري — سؤال منقول بـ {{be}} (٢٠١٧/١)",
+          note:"سؤال حقيقي من امتحان وزاري سابق (٢٠١٧/١) ضمن ملازم المراجعة — يختبر تحول الضمير وفعل الكينونة معاً.",
+          instruction:"حوّل السؤال التالي إلى كلام منقول: {{'What are you doing?' Adam asked me.}}",
+          q:"Which is the correct reported question?",
+          opts:["Adam asked me what I was doing.","Adam asked me what was I doing.","Adam asked me what am I doing.","Adam asked me what I am doing."], correct:0,
+          steps:[
+            "غيّر الضمير أولاً: السؤال الأصلي موجّه لـ {{me}} (أنا)، وبما أن {{Adam}} هو من يتكلم عني، يتحول {{you}} في السؤال المنقول إلى {{I}}.",
+            "طبّق تراجع الزمن على فعل الكينونة: {{are}} (مضارع مستمر) تصبح {{was}} مع الفاعل الجديد {{I}} — فتصبح الجملة كلها {{what I was doing}}.",
+            "راجع كل خيار خاطئ على حدة: [[what was I doing]] غيّر الزمن بشكل صحيح لكنه أبقى ترتيب السؤال (فعل مساعد قبل الفاعل)، وهذا خطأ في القاعدة العامة للسؤال المنقول. [[what am I doing]] و[[what I am doing]] كلاهما لم يطبّق تراجع الزمن إطلاقاً (بقي {{am}} بدل {{was}}).",
+            "بعد استبعاد الخيارات الثلاثة كل واحد بسببه الخاص، يبقى الخيار الذي طبّق تغيير الضمير وتراجع الزمن وترتيب الجملة الخبرية معاً: [[Adam asked me what I was doing]].",
+            "تأكيد أخير: أعد قراءة الجملة كاملة — {{Adam asked me}} [[what I was doing]] — ضمير صحيح، زمن متراجع، وترتيب خبري سليم."
+          ] },
+        // ================= Lesson 5 — I wish / If only =================
+        { type:"concept", tag:"الفكرة", lesson:5, title:"صيغة {{I wish}} / {{If only}} للندم على الماضي",
+          text:"نستخدم {{I wish}} أو {{If only}} + الماضي التام ({{had/hadn't}} + التصريف الثالث) للتعبير عن الندم على شيء حدث (أو لم يحدث) في الماضي ولا يمكن تغييره الآن. {{If only}} أقوى عاطفياً من {{I wish}} لكنها تحمل نفس المعنى والصيغة تماماً.",
+          examples:[
+            { text:"If only you had told me about your problem.", term:"had told" },
+            { text:"I wish I hadn't gone to bed so late.", term:"hadn't gone" },
+            { text:"I wish I'd learnt the Highway Code.", term:"I'd learnt" }
+          ] },
+        { type:"warn", tag:"تنبيه", lesson:5, title:"خطأ شائع بين الطلاب — {{I wish I would have}}",
+          text:"لا تستخدم {{would have}} بعد {{I wish}} عند الحديث عن ندمك أنت نفسك على فعل ماضٍ — الخطأ الشائع {{I wish I would have studied harder}} غير صحيح في الإنكليزية المعيارية؛ الصحيح {{I wish I had studied harder}}. صيغة {{I wish + subject + would}} تُستخدم فقط للتعبير عن رغبتك بتغيّر سلوك شخص آخر في المستقبل ({{I wish he would stop smoking}})، وهي حالة مختلفة تماماً." },
+        { type:"examModel", tag:"نموذج امتحاني", lesson:5, title:"نمط سؤال وزاري — ندم بـ {{I wish}} (٢٠١٤/٢)",
+          note:"سؤال حقيقي من امتحان وزاري سابق (٢٠١٤/٢) ضمن ملازم المراجعة (عباس الجميلي).",
+          instruction:"أعد الصياغة معبّراً عن الندم: {{Unfortunately, I ate three bars of chocolate. That's why I felt sick.}}",
+          q:"Which sentence correctly expresses regret?",
+          opts:["I wish I hadn't eaten three bars of chocolate.","I wish I didn't eat three bars of chocolate.","I wish I hadn't eat three bars of chocolate.","I wish I don't eat three bars of chocolate."], correct:0,
+          steps:[
+            "حدد الفعل الذي حدث فعلاً وتسبب في الشعور بالسوء: {{ate}} (أكل) — وبما أن النتيجة سيئة (الشعور بالمرض)، فالندم هو على القيام بهذا الفعل، أي: «ليتني لم آكله».",
+            "تذكّر القاعدة: للتعبير عن الندم على فعل ماضٍ فعلاً حدث، نستخدم {{I wish}} + {{hadn't}} + التصريف الثالث — فتكون الصيغة الصحيحة {{hadn't eaten}}.",
+            "راجع كل خيار خاطئ على حدة: [[I didn't eat]] و[[I don't eat]] كلاهما لا يستخدم الماضي التام المطلوب مع {{wish}} للندم على الماضي. [[hadn't eat]] استخدم {{hadn't}} بشكل صحيح لكنه أخطأ في التصريف — الفعل بعد {{had/hadn't}} يجب أن يكون تصريفاً ثالثاً ({{eaten}})، وليس المصدر ({{eat}}).",
+            "بعد استبعاد الخيارات الثلاثة كل واحد بسببه الخاص، يبقى الخيار المطابق تماماً للقاعدة: [[I wish I hadn't eaten three bars of chocolate]].",
+            "تأكيد أخير: أعد قراءة الجملة كاملة — [[I wish I hadn't eaten]] {{three bars of chocolate.}} — تعبير ندم صحيح نحوياً وواضح المعنى."
+          ] },
+        { type:"examModel", tag:"نموذج امتحاني", lesson:5, title:"نمط سؤال وزاري — ندم بـ {{If only}} (٢٠١٥/١)",
+          note:"سؤال حقيقي من امتحان وزاري سابق (٢٠١٥/١) ضمن ملازم المراجعة (عباس الجميلي).",
+          instruction:"أعد الصياغة معبّراً عن الندم: {{Unfortunately, my sister phoned me but I wasn't at home. (Regret: use 'wish')}}",
+          q:"Which sentence correctly expresses regret?",
+          opts:["I wish I had been at home.","I wish I was at home.","I wish I am at home.","I wish I would be at home."], correct:0,
+          steps:[
+            "افهم الموقف أولاً: الأخت اتصلت لكن المتكلم لم يكن في البيت — والندم هنا على غياب حالة في الماضي (لم يكن هناك)، وليس على فعل قام به.",
+            "تذكّر القاعدة: حتى مع فعل الكينونة {{be}}، الندم على حالة ماضية يحتاج الماضي التام {{had been}}، وليس الماضي البسيط {{was}} ولا المضارع {{am}}.",
+            "راجع كل خيار خاطئ على حدة: [[I was at home]] ماضٍ بسيط، وهذا يعبّر عن حقيقة حدثت لا عن ندم افتراضي. [[I am at home]] مضارع، وهذا خطأ زمني واضح مع موقف حدث في الماضي. [[I would be at home]] يستخدم {{would}} بدل {{had been}} — وهذا الخطأ الشائع الذي نبّهنا له في قسم التنبيه أعلاه.",
+            "بعد استبعاد الخيارات الثلاثة كل واحد بسببه الخاص، يبقى الخيار المطابق تماماً للقاعدة: [[I wish I had been at home]].",
+            "تأكيد أخير: أعد قراءة الجملة كاملة — [[I wish I had been]] {{at home.}} — تعبير ندم صحيح عن حالة ماضية بفعل الكينونة."
+          ] },
+        // ================= Lesson 6 — Third Conditional =================
+        { type:"formula", tag:"الصيغة", lesson:6, title:"صيغة {{Third Conditional}}",
+          lines:[
+            [ {t:"If",role:"target"}, {t:" + "}, {t:"Subject",role:"subject"}, {t:" + "}, {t:"past perfect",role:"verb"}, {t:" , "}, {t:"Subject",role:"subject"}, {t:" + "}, {t:"would/could/might + have",role:"target"}, {t:" + "}, {t:"past participle",role:"verb"} ]
+          ],
+          examples:[
+            [ {t:"If",role:"target"}, {t:" I "}, {t:"had passed",role:"verb"}, {t:" the test, I "}, {t:"would have become",role:"target"}, {t:" a pilot."} ],
+            [ {t:"If",role:"target"}, {t:" we "}, {t:"had trained",role:"verb"}, {t:" harder, we "}, {t:"might have won",role:"target"}, {t:" the match."} ]
+          ],
+          altExamples:[
+            [
+              [ {t:"If",role:"target"}, {t:" I "}, {t:"had known",role:"verb"}, {t:" about her problems, I "}, {t:"would have lent",role:"target"}, {t:" her some money."} ]
+            ]
+          ],
+          note:"نستخدم {{Third Conditional}} للحديث عن مواقف غير حقيقية في الماضي، وغالباً للتعبير عن الندم على قرار ماضٍ." },
+        { type:"warn", tag:"تنبيه", lesson:6, title:"خطأ شائع بين الطلاب — الخلط بين {{Second}} و{{Third Conditional}}",
+          text:"لا تخلط بين الشرطيتين الثانية والثالثة: {{Second Conditional}} يتحدث عن موقف غير حقيقي في الحاضر/المستقبل بفعل ماضٍ بسيط ({{If I had a car...}})، بينما {{Third Conditional}} يتحدث عن موقف غير حقيقي انتهى في الماضي بفعل ماضٍ تام ({{If I had had a car...}}). العلامة الفارقة: إذا كان الحدث المذكور قد فات تماماً ولم يعد بالإمكان تغييره، فالصيغة المطلوبة {{Third Conditional}} بالماضي التام، لا الماضي البسيط." },
+        { type:"examModel", tag:"نموذج امتحاني", lesson:6, title:"نمط سؤال وزاري — {{Third Conditional}} (ندم مهني)",
+          note:"سؤال حقيقي مبني على تمرين من كتاب النشاط ({{Activity Book}})، الوحدة 3، الدرس 6 — حوار مخرج أفلام يتحدث عن مهن جرّبها ولم تنجح.",
+          instruction:"اختر الصيغة الصحيحة: {{I (would have trained) as a pilot if I (pass) the eye test.}}",
+          q:"I would have trained as a pilot if I ______ the eye test.",
+          opts:["had passed","passed","have passed","would pass"], correct:0,
+          steps:[
+            "لاحظ جواب الشرط: {{I would have trained}} ({{would have}} + تصريف ثالث) — وهذه بالتحديد صيغة جواب الشرط في {{Third Conditional}}، وتخبرنا أن جملة الشرط يجب أن تكون بصيغة الماضي التام.",
+            "تذكّر القاعدة: فعل جملة الشرط في {{Third Conditional}} دائماً {{had}} + تصريف ثالث — فتكون الصيغة الصحيحة {{had passed}}.",
+            "راجع كل خيار خاطئ على حدة: [[passed]] ماضٍ بسيط، وهذا زمن {{Second Conditional}} وليس {{Third}} — يخالف صيغة جواب الشرط الموجودة فعلاً في الجملة ({{would have trained}}). [[have passed]] مضارع تام، زمن غير مستخدم في هذه الصيغة إطلاقاً. [[would pass]] تستخدم {{would}} في جملة الشرط نفسها، وهذا خطأ لأن {{would}} يظهر فقط في جواب الشرط.",
+            "بعد استبعاد الخيارات الثلاثة كل واحد بسببه الخاص، يبقى الخيار المطابق تماماً لقاعدة {{Third Conditional}}: [[had passed]].",
+            "تأكيد أخير: أعد قراءة الجملة كاملة — {{I would have trained as a pilot if I}} [[had passed]] {{the eye test.}} — جملة شرطية غير حقيقية في الماضي، صحيحة نحوياً ومعبّرة عن ندم واضح."
+          ] },
+        { type:"examModel", tag:"نموذج امتحاني", lesson:6, title:"نمط سؤال وزاري — {{Third Conditional}} (تحويل الفعل)",
+          note:"سؤال حقيقي مبني على تمرين من كتاب النشاط ({{Activity Book}})، الوحدة 3، الدرس 6.",
+          instruction:"اختر الصيغة الصحيحة: {{We (not eat) at that restaurant if we had known it was so expensive.}}",
+          q:"We ______ at that restaurant if we had known it was so expensive.",
+          opts:["wouldn't have eaten","didn't eat","won't eat","wouldn't eat"], correct:0,
+          steps:[
+            "لاحظ جملة الشرط: {{if we had known...}} (ماضٍ تام) — هذا يؤكد أن الجملة كلها في نمط {{Third Conditional}}، وأن الفراغ هو جواب الشرط.",
+            "تذكّر القاعدة: جواب الشرط في {{Third Conditional}} يُصاغ بـ {{would/could/might + have}} + تصريف ثالث — والمعنى هنا سلبي (لم يكونوا سيأكلون هناك)، فالصيغة الصحيحة {{wouldn't have eaten}}.",
+            "راجع كل خيار خاطئ على حدة: [[didn't eat]] ماضٍ بسيط، وهذا يصف حقيقة حدثت فعلاً، لا نتيجة افتراضية لموقف لم يحدث. [[won't eat]] مستقبل حقيقي، لا علاقة له بموقف ماضٍ افتراضي. [[wouldn't eat]] تستخدم {{would}} بدون {{have}}، وهذه صيغة {{Second Conditional}} وليس {{Third}}.",
+            "بعد استبعاد الخيارات الثلاثة كل واحد بسببه الخاص، يبقى الخيار المطابق تماماً لقاعدة {{Third Conditional}}: [[wouldn't have eaten]].",
+            "تأكيد أخير: أعد قراءة الجملة كاملة — {{We}} [[wouldn't have eaten]] {{at that restaurant if we had known it was so expensive.}} — جملة شرطية غير حقيقية في الماضي، صحيحة نحوياً."
+          ] },
+
+        // ================= Lesson 7 — Learn English in the UK =================
+        { type:"passage", tag:"قطعة الوحدة", lesson:7, title:"القطعة الختامية للدرس السابع — إعلان كلية {{Birchwood}} من الكتاب المدرسي",
+          passageTitle:"Learn English in the UK at Birchwood International College!",
+          source:"من كتاب الطالب — الوحدة الثالثة ({{Jobs}})، الدرس السابع، صفحة 36. التمرين الأصلي في كتاب الطالب فراغات تُملأ من صندوق كلمات (تمرين مفردات)؛ النص أدناه هو النص الكامل بعد إدراج الكلمات الصحيحة، مؤكَّد من مفتاح كتاب النشاط (صفحات 64-65).",
+          paragraphs:[
+            "We have colleges in 24 different locations across the country. Choose a busy city, where you can enjoy shopping, eating out and nightlife. Or opt for a village in the English countryside, where you will enjoy beautiful surroundings, lovely walks and a slower pace of life.",
+            "All our teachers are qualified and highly experienced. Classes are small, which means that you will be sure of a high level of individual attention. Our courses, which run throughout the year, are tailored to your needs, and our friendly staff are always on hand to offer expert advice. Choose from courses of one week to three months' duration.",
+            "We offer a choice of accommodation to suit your needs. If you choose homestay, you will stay in an English home, which means you will have the opportunity to return family life in Britain. You will also be able to practise your English in the evenings.",
+            "In 12 of our locations, you can choose residential accommodation. We have our own students' hostels where we can offer comfortable accommodation in single rooms. Breakfast is provided, and students can buy other meals in the on-site canteen."
+          ],
+          explain:[
+            "لدينا كليات في 24 موقعاً مختلفاً في أنحاء البلاد؛ اختر مدينة صاخبة للتسوق والمطاعم والسهر، أو قرية في الريف الإنكليزي للمناظر الجميلة والمشي وإيقاع حياة أهدأ.",
+            "كل معلمينا مؤهلون وذوو خبرة عالية، والصفوف صغيرة لضمان اهتمام فردي، والدورات مصمَّمة حسب احتياجك، وموظفونا الودودون جاهزون دوماً لتقديم النصيحة، بمدد من أسبوع واحد إلى ثلاثة أشهر.",
+            "نوفّر خيارات إقامة تناسب احتياجك؛ إقامة الاستضافة العائلية تمنحك فرصة معايشة الحياة العائلية البريطانية وممارسة الإنكليزية مساءً.",
+            "في 12 موقعاً يمكن اختيار إقامة داخلية في نُزل الطلاب الخاص بنا بغرف مفردة مريحة، مع وجبة الفطور، وبقية الوجبات تُشترى من المقصف الداخلي."
+          ],
+          vocab:[
+            ["accommodation","سكن / إقامة"],
+            ["experienced","ذو خبرة"],
+            ["level (of attention)","مستوى (الاهتمام)"],
+            ["tailored to","مصمَّم خصيصاً لـ"],
+            ["hostel","نُزل / سكن طلابي"],
+            ["canteen","مقصف"]
+          ],
+          patterns:[
+            { label:"نمط سؤال حقيقي من كتاب النشاط — اشتقاق الصفة من الاسم",
+              q:"All our teachers and other staff members are (qualification) ______.",
+              a:"qualified",
+              note:"تمرين C حقيقي من كتاب النشاط، صفحة 65 — اشتقاق صفة من اسم مذكور بين قوسين، مع تأكيد الإجابة من نص الإعلان نفسه." },
+            { label:"نمط سؤال حقيقي من كتاب النشاط — اشتقاق آخر",
+              q:"Our (residence) ______ accommodation includes three meals a day.",
+              a:"residential",
+              note:"من نفس التمرين — بقية الأزواج: {{comfort → comfortable}}، {{experience → experienced}}، {{tailor → tailored}}، {{friend → friendly}}." }
+          ] },
+        // ================= Lesson 8 — Summer jobs =================
+        { type:"passage", tag:"قطعة الوحدة", lesson:8, title:"القطعة الختامية للدرس الثامن — رسالة حامد إلى باسم من الكتاب المدرسي",
+          passageTitle:"Summer jobs — Hamed's email to Basim",
+          source:"من كتاب الطالب — الوحدة الثالثة ({{Jobs}})، الدرس الثامن، صفحة 37. رسالة إلكترونية حقيقية كاملة، مع أسئلة استيعاب حقيقية من الكتاب نفسه.",
+          paragraphs:[
+            "Dear Basim, How are things with your university course? I've just got my exam result (that one you helped me study for, remember?). I got a much better mark than last time. Thanks a lot!",
+            "So, I'm already thinking about what to do this summer. I know it's still early, and we're very busy with studies now, but we shouldn't leave it to the last minute. I had a look at some jobs, and there's one I found really interesting, and we could do together: it's at summer camps for children with special needs in the USA. They have 12 camps around the country. When applying, we say which three options we would prefer to work at, in order of preference. Then they say which of those camps they can fit us in.",
+            "There are different jobs available, but personally, I think activity supervisor would be ideal for us. It involves things like taking the children out on walks and doing fun activities, like kayaking and climbing. It is hard work, but we get some time off during the day to relax. We also get two weekends off every month, so we could go and visit big cities in the area.",
+            "The salary is really good, and the best part is that we don't have to spend much - apart from the plane ticket, of course. All our meals and accommodation are provided by the camp. So we could save a good amount of money (even after spending on our weekend trips).",
+            "They're offering contracts for six, eight or ten weeks. I was thinking eight weeks would be better for us because we could take an English course for a couple of weeks before we come back and relax a bit before we start studying again.",
+            "Let me know what you think. I really hope you can come. It'll be a great experience we can have together abroad. We'll also learn lots of skills, and it'll look great on our CV. Talk soon, Hamed"
+          ],
+          explain:[
+            "يسأل حامد صديقه باسم عن دراسته الجامعية، ويشكره لأنه ساعده على تحسين درجته في الامتحان.",
+            "يفكر حامد مبكراً بخطة الصيف: عمل في مخيمات صيفية لأطفال ذوي احتياجات خاصة في الولايات المتحدة، مع 12 مخيماً يمكن الاختيار من بينها بترتيب الأفضلية.",
+            "الوظيفة المقترحة (مشرف أنشطة) تشمل الأنشطة الترفيهية مع الأطفال، وهي عمل شاق لكنه يتضمن أوقات راحة وعطلات أسبوعية للتجول في المدن القريبة.",
+            "الراتب جيد والمصاريف قليلة لأن المخيم يوفر الطعام والسكن، ما يسمح بادخار مبلغ جيد من المال.",
+            "يفضّل حامد عقداً مدته ثمانية أسابيع ليتمكنا من أخذ دورة لغة إنكليزية قبل العودة والراحة قليلاً قبل بدء الدراسة من جديد.",
+            "يطلب حامد رأي باسم، مؤكداً أن التجربة ستكون رائعة وستضيف مهارات جيدة إلى سيرتهما الذاتية."
+          ],
+          vocab:[
+            ["activity supervisor","مشرف أنشطة"],
+            ["in order of preference","بترتيب الأفضلية"],
+            ["contract","عقد (عمل)"],
+            ["CV","السيرة الذاتية"],
+            ["time off","وقت راحة / إجازة"],
+            ["leave it to the last minute","يؤجل الأمر للحظة الأخيرة"]
+          ],
+          patterns:[
+            { label:"نمط سؤال حقيقي من كتاب الطالب — صواب أم خطأ حسب النص",
+              q:"They have to work every day during the contract.",
+              a:"False — they get some time off during the day and two weekends off every month.",
+              note:"من تمرين الاستيعاب الحقيقي في كتاب الطالب، صفحة 37 (سؤال 2)." },
+            { label:"نمط سؤال حقيقي من كتاب الطالب — صواب أم خطأ",
+              q:"The camp will give them food and a place to sleep for free.",
+              a:"True — 'All our meals and accommodation are provided by the camp.'",
+              note:"من نفس تمرين الاستيعاب، صفحة 37." }
+          ] },
+        // ================= Lesson 9 — Focus on careers: conference interpreter =================
+        { type:"passage", tag:"قطعة الوحدة", lesson:9, title:"القطعة الختامية للدرس التاسع — مترجمة فورية من الكتاب المدرسي",
+          passageTitle:"Focus on careers — conference interpreter: Samira Al Mahmoud",
+          source:"من كتاب الطالب — الوحدة الثالثة ({{Jobs}})، الدرس التاسع، صفحة 38. مقال معلوماتي كامل عن مهنة الترجمة الفورية، مع أسئلة استيعاب حقيقية من كتاب النشاط (صفحات 68-69).",
+          paragraphs:[
+            "The place is the Hilton Hotel, Abu Dhabi, and the annual Arab Oil Industry Conference is about to break for lunch. Samira Al Mahmoud, who has been interpreting from English to Arabic, removes her headphones.",
+            "Asked how she prepared for this conference, Samira says, 'I knew the topic was oil, so I read about the subject to get familiar with the technical terms. You can't use a general word like \"the ground\", for example, when you actually mean \"the source rock.\" In my work, it's very important to listen to the news every day and read the newspapers. That way, you have good general knowledge and know what is going on in the world. Some interpreters read three or four newspapers a day.'",
+            "Samira was born in Britain, but her parents are both from Iraq. Samira grew up speaking Arabic at home but English at school. After leaving school, she did a degree in Arabic at the University of London and then a nine-month postgraduate course in conference interpreting. There was a lot of competition to get onto the course. And the course was very difficult. In fact, only 50% of the students who were accepted passed their final diploma exams.",
+            "Samira, like most conference interpreters, works freelance. She only works when she wants to and for the organization that she wants to work for. She often works for the UN in New York and Geneva, and the World Bank and UNESCO in Paris. She earns around £450 a day. 'The amount you get depends on who you are working for and how many of you are working. It's less stressful if there are two of us in the booth. Then we can take turns. I interpret one speech, and then a colleague does the next. This morning, whenever the speaker said figures like $250,398,462 or 85,637 barrels of oil, my colleague wrote them down, so I didn't have to memorize them.'",
+            "Samira says that remaining calm under pressure is the most important quality in an interpreter. It's important to convey the sense even if you can't think of a particular word. 'Sometimes you will be feeling bad because you know the word. It's on the tip of your tongue, but it just won't come to you. But you mustn't waste time trying to remember it. If you do, you will miss the rest of the speech.'",
+            "Samira says it's also important to be able to think fast. She explained why. Most interpreters only go into one language. Samira's active language is Arabic, but very occasionally, she goes into English. Recently, she was translating from Arabic to English for an Iraqi speaker on TV. Speaking in Arabic, he said, 'Akl il-inab habba habba' - words which translate literally into English as 'Grapes are eaten one by one.' But this literal translation wouldn't have been clear to English listeners. Thinking quickly, she translated the phrase into English as 'One step at a time.'",
+            "Even if you have lived all your life in Iraq and don't come from an international family like Samira's, it is still possible to become an interpreter. Arabic is a language which is very much in demand, and if you can interpret from Arabic to English, you will never be out of a job. The way to train as an interpreter is to first get a degree in English and then do a postgraduate diploma in interpreting."
+          ],
+          explain:[
+            "المكان فندق هيلتون أبوظبي، وأثناء استراحة غداء مؤتمر صناعة النفط العربي السنوي، تخلع سميرة المحمود سماعاتها بعد الانتهاء من الترجمة من الإنكليزية إلى العربية.",
+            "تستعد سميرة لكل مؤتمر بقراءة موضوعه مسبقاً لتتعرف على المصطلحات التقنية الدقيقة (مثل الفرق بين {{the ground}} و{{the source rock}})، وتتابع الأخبار والصحف يومياً لتكوين ثقافة عامة واسعة.",
+            "وُلدت سميرة في بريطانيا لأبوين عراقيين، ونشأت تتحدث العربية في البيت والإنكليزية في المدرسة، ثم درست اللغة العربية في جامعة لندن وأكملت دبلوم دراسات عليا في الترجمة الفورية مدته تسعة أشهر — دورة تنافسية وصعبة جداً، إذ لا ينجح في امتحانها النهائي سوى 50% ممن قُبلوا فيها.",
+            "تعمل سميرة، كمعظم المترجمين الفوريين، بشكل حر ({{freelance}})، وتختار متى وتعمل لصالح من — وتتقاضى نحو 450 جنيهاً إسترلينياً يومياً، ويقل الضغط النفسي عندما يعمل مترجمان معاً بالتناوب داخل الكابينة.",
+            "أهم صفة للمترجم الفوري برأي سميرة هي الهدوء تحت الضغط، ونقل المعنى العام حتى عند نسيان كلمة بعينها بدل إضاعة الوقت في تذكرها.",
+            "تشرح سميرة أهمية التفكير السريع بمثال حقيقي: عبارة عراقية عامية {{'Akl il-inab habba habba'}} تُترجم حرفياً إلى {{'Grapes are eaten one by one'}}، لكن هذه الترجمة الحرفية لن تكون واضحة لمستمع إنكليزي — فترجمتها سميرة سريعاً بمعناها الحقيقي: {{'One step at a time.'}}",
+            "تؤكد سميرة أن أي شخص عراقي، حتى من دون خلفية عائلية دولية مثلها، يمكنه أن يصبح مترجماً فورياً، لأن اللغة العربية مطلوبة جداً — والطريق هو الحصول على شهادة جامعية في الإنكليزية ثم دبلوم دراسات عليا في الترجمة الفورية."
+          ],
+          vocab:[
+            ["freelance","يعمل بشكل حر (غير موظف بدوام)"],
+            ["postgraduate diploma","دبلوم دراسات عليا"],
+            ["booth","كابينة (الترجمة الفورية)"],
+            ["technical terms","مصطلحات تقنية"],
+            ["stressful","مُجهِد / مسبِّب للتوتر"],
+            ["in demand","مطلوب / رائج"]
+          ],
+          patterns:[
+            { label:"نمط سؤال حقيقي من كتاب النشاط — سؤال استيعاب مباشر",
+              q:"How many students who start an interpreting course finish the course?",
+              a:"Only 50% of the students who were accepted passed their final diploma exams.",
+              note:"من تمرين A الحقيقي في كتاب النشاط، صفحة 68 (السؤال 3)." },
+            { label:"نمط سؤال حقيقي من كتاب النشاط — صواب أم خطأ",
+              q:"Conference interpreters must translate each word literally.",
+              a:"False — the text explains a literal translation is sometimes unclear, and interpreters convey the sense/meaning instead.",
+              note:"من تمرين B الحقيقي في كتاب النشاط، صفحة 68 (السؤال 5) — مثال العبارة العراقية يثبت ذلك مباشرة." }
+          ] }
+      ],
+
+      vocab: [
+        ["architecture","الهندسة المعمارية"],["the aviation industry","صناعة الطيران"],
+        ["the oil industry","صناعة النفط"],["the tourist industry","صناعة السياحة"],
+        ["architect","مهندس معماري"],["lifeguard","منقذ سباحة"],
+        ["tour guide","مرشد سياحي"],["conference interpreter","مترجم فوري"],
+        ["suggest / promise / advise / refuse / agree","يقترح / يعد / ينصح / يرفض / يوافق"],
+        ["regret","ندم"],["postgraduate diploma","دبلوم دراسات عليا"],
+        ["freelance","يعمل بشكل حر"],["accommodation","سكن / إقامة"],
+        ["qualified / experienced","مؤهَّل / ذو خبرة"],["in demand","مطلوب / رائج"],
+        ["background","الخلفية / النشأة"],["fascinated by","مفتون بـ"]
+      ],
+      readings: [
+        { title:"Text 1 — Meet one of the most popular architects — Zaha Hadid (interview)",
+          paragraphs:[
+            "When did you decide to be an architect? It has been my dream since childhood.",
+            "I was born in Baghdad and studied Mathematics at the American University of Beirut. Then I moved to London and studied Architecture.",
+            "Yes, the Pritzker Prize in 2004 - I was the first woman ever to win this - and the Stirling Prize in 2010 and 2011.",
+            "Any Iraqi woman can succeed in her chosen career if she works hard enough."
+          ],
+          note:"هذه هي المقابلة الرسمية الكاملة من كتاب الطالب — راجع شرحها وتمارين {{Reported Speech}} الحقيقية عليها ضمن قسم «قطعة الوحدة» في محتوى الأستاذ، الدرس الرابع." },
+        { title:"Text 2 — Learn English in the UK (Birchwood College advertisement)",
+          body:"إعلان حقيقي من كتاب الطالب لكلية لغة إنكليزية في بريطانيا: مواقع متعددة، معلمون مؤهلون، دورات مصممة حسب الحاجة، وخيارات إقامة (استضافة عائلية أو نُزل طلابي)." },
+        { title:"Text 3 — Summer jobs (Hamed's email to Basim)",
+          paragraphs:[
+            "So, I'm already thinking about what to do this summer... it's at summer camps for children with special needs in the USA.",
+            "There are different jobs available, but personally, I think activity supervisor would be ideal for us.",
+            "The salary is really good, and the best part is that we don't have to spend much - apart from the plane ticket, of course.",
+            "It'll be a great experience we can have together abroad. We'll also learn lots of skills, and it'll look great on our CV."
+          ],
+          note:"هذه هي الرسالة الرسمية الكاملة من كتاب الطالب — راجع أسئلة الاستيعاب الحقيقية عليها ضمن قسم «قطعة الوحدة» في محتوى الأستاذ، الدرس الثامن." },
+        { title:"Text 4 — Focus on careers: conference interpreter (Samira Al Mahmoud)",
+          paragraphs:[
+            "The place is the Hilton Hotel, Abu Dhabi, and the annual Arab Oil Industry Conference is about to break for lunch.",
+            "Samira, like most conference interpreters, works freelance... She earns around £450 a day.",
+            "'Akl il-inab habba habba' - words which translate literally into English as 'Grapes are eaten one by one.' ... she translated the phrase into English as 'One step at a time.'",
+            "Arabic is a language which is very much in demand, and if you can interpret from Arabic to English, you will never be out of a job."
+          ],
+          note:"هذه هي القطعة الرسمية الكاملة من كتاب الطالب — راجع شرحها الكامل ومفرداتها ضمن قسم «قطعة الوحدة» في محتوى الأستاذ، الدرس التاسع." }
+      ],
+      // ---- Student-mode activity-book exercises, per lesson (real exercises
+      // from كتاب النشاط للسادس الإعدادي، الوحدة الثالثة — Jobs — converted to
+      // interactive MCQ form; sentences/prompts are the book's real text,
+      // wrong options are our own distractors, per the same convention used
+      // for Units 1-2). ----
+      activities: [
+        { lesson:1, lessonTitle:"تمارين الدرس 1 — مفردات المهن والصناعات",
+          items:[
+            { instruction:"من يقوم بهذا العمل؟ اختر المهنة الصحيحة:",
+              q:"Who designs and builds machines, engines or roads?",
+              opts:["a plumber","an engineer","a secretary","a journalist"], correct:1 },
+            { instruction:"من يقوم بهذا العمل؟",
+              q:"Who operates on people in hospital?",
+              opts:["a surgeon","a lifeguard","a pilot","a lawyer"], correct:0 },
+            { instruction:"من يقوم بهذا العمل؟",
+              q:"Who is responsible for the safety of swimmers?",
+              opts:["a flight attendant","a lifeguard","a tour guide","a cameraman"], correct:1 },
+            { instruction:"من يقوم بهذا العمل؟",
+              q:"Who gives advice to people about the law?",
+              opts:["a lawyer","an architect","a plumber","a secretary"], correct:0 },
+            { instruction:"أكمل تعريف المهنة:",
+              q:"A nurse is someone who ______.",
+              opts:["looks after sick people and helps doctors","designs buildings","fixes pipes for water","operates a camera"], correct:0 },
+            { instruction:"أكمل تعريف المهنة:",
+              q:"A tour guide is someone who ______.",
+              opts:["writes articles for magazines","shows tourists around","flies a plane","gives legal advice"], correct:1 }
+          ] },
+        { lesson:2, lessonTitle:"تمارين الدرس 2 — {{Zero and First Conditional}}",
+          items:[
+            { instruction:"اختر النهاية الصحيحة للجملة:",
+              q:"If anyone needs advice about their application forms, ______",
+              opts:["I'll be here tomorrow to help.","I was here yesterday to help.","I'm being here to help.","I helped here yesterday."], correct:0 },
+            { instruction:"اختر النهاية الصحيحة للجملة:",
+              q:"If they don't leave soon, ______",
+              opts:["they won't catch the train.","they didn't catch the train.","they aren't catching the train.","they don't caught the train."], correct:0 },
+            { instruction:"اختر الفعل الصحيح:",
+              q:"If you want to do a degree in Britain, you ______ do a one-year foundation course first.",
+              opts:["have to","had to","will had to","are having to"], correct:0 },
+            { instruction:"اختر النهاية الصحيحة (استخدام {{unless}}):",
+              q:"Food goes bad ______",
+              opts:["unless you put it in the fridge.","if you put it in the fridge.","unless you didn't put it in the fridge.","if you don't putting it in the fridge."], correct:0 },
+            { instruction:"اختر الجملة الصحيحة — {{first conditional}}:",
+              q:"Which sentence is grammatically correct?",
+              opts:["If it's raining tomorrow, we won't go for a picnic.","If it will rain tomorrow, we won't go for a picnic.","If it rains tomorrow, we don't go for a picnic.","If it's rain tomorrow, we won't go for a picnic."], correct:0 }
+          ] },
+        { lesson:3, lessonTitle:"تمارين الدرس 3 — {{Second Conditional}}",
+          items:[
+            { instruction:"اختر الصيغة الصحيحة:",
+              q:"Where ______ to live if you could live anywhere in the world?",
+              opts:["would you choose","do you choose","did you choose","will you choose"], correct:0 },
+            { instruction:"اختر الصيغة الصحيحة:",
+              q:"I ______ to parachute if my friend said she would do it with me.",
+              opts:["would learn","learn","learned","will learn"], correct:0 },
+            { instruction:"اختر الصيغة الصحيحة:",
+              q:"She would look much nicer if she ______ contact lenses instead of glasses.",
+              opts:["wore","wears","would wear","had worn"], correct:0 },
+            { instruction:"اختر الصيغة الصحيحة:",
+              q:"I ______ him even if he were the last man on earth!",
+              opts:["wouldn't marry","won't marry","don't marry","didn't marry"], correct:0 }
+          ] },
+        { lesson:4, lessonTitle:"تمارين الدرس 4 — {{Reported Speech}}",
+          items:[
+            { instruction:"حوّل إلى كلام منقول:",
+              q:"Zaha said: 'It has been my dream since childhood.' → Zaha said ______",
+              opts:["(that) it had been her dream since childhood.","(that) it has been her dream since childhood.","(that) it was her dream since childhood.","(that) it will be her dream since childhood."], correct:0 },
+            { instruction:"رتّب الكلمات لتكوين جملة صحيحة: {{was / asked / what / I / doing / me}}",
+              q:"The teacher ______.",
+              opts:["asked me what I was doing.","asked me what was I doing.","asked what I was doing me.","asked me what I doing was."], correct:0 },
+            { instruction:"أعد الصياغة باستخدام فعل إبلاغ مناسب: {{'Why don't you apply for the job?' Hazem said.}}",
+              q:"Hazem ______ for the job.",
+              opts:["suggested applying","promised to apply","refused applying","agreed to apply"], correct:0 },
+            { instruction:"أعد الصياغة باستخدام فعل إبلاغ مناسب: {{'OK, I'll sign the contract,' Saeed said.}}",
+              q:"Saeed ______ the contract.",
+              opts:["promised to sign","suggested signing","advised to sign","refused to sign"], correct:0 }
+          ] },
+        { lesson:5, lessonTitle:"تمارين الدرس 5 — {{I wish}} / {{If only}}",
+          items:[
+            { instruction:"اكتب ندمها الصحيح: {{Unfortunately, he fell over during the race. That's why he didn't win.}}",
+              q:"Which sentence correctly expresses his regret?",
+              opts:["If only he hadn't fallen over during the race.","If only he didn't fall over during the race.","If only he doesn't fall over during the race.","If only he hasn't fallen over during the race."], correct:0 },
+            { instruction:"اكتب الندم الصحيح: {{Unfortunately, they didn't train every day. That's why they lost the match.}}",
+              q:"Which sentence correctly expresses their regret?",
+              opts:["If only they had trained every day.","If only they trained every day.","If only they would train every day.","If only they train every day."], correct:0 },
+            { instruction:"اكتب الندم الصحيح: {{Unfortunately, I spent all my money at the weekend. That's why I can't buy those shoes.}}",
+              q:"Which sentence correctly expresses regret?",
+              opts:["I wish I hadn't spent all my money at the weekend.","I wish I didn't spend all my money at the weekend.","I wish I wouldn't spend all my money at the weekend.","I wish I don't spend all my money at the weekend."], correct:0 }
+          ] },
+        { lesson:6, lessonTitle:"تمارين الدرس 6 — {{Third Conditional}}",
+          items:[
+            { instruction:"طابق نهاية الجملة الصحيحة: {{I would have trained as a pilot}}",
+              q:"I would have trained as a pilot ______",
+              opts:["if I had passed the eye test.","if I passed the eye test.","if I have passed the eye test.","if I would pass the eye test."], correct:0 },
+            { instruction:"اختر الصيغة الصحيحة:",
+              q:"If we had left a little earlier, we ______ the bus.",
+              opts:["wouldn't have missed","didn't miss","wouldn't miss","won't miss"], correct:0 },
+            { instruction:"اختر الصيغة الصحيحة:",
+              q:"I would have studied medicine if my parents ______ enough money to pay for the course.",
+              opts:["had had","had","have had","would have"], correct:0 },
+            { instruction:"اختر الصيغة الصحيحة:",
+              q:"If Salwa hadn't told me about the new time for the class, I ______ really late.",
+              opts:["would have been","would be","had been","was"], correct:0 }
+          ] },
+        { lesson:7, lessonTitle:"تمارين الدرس 7 — اشتقاق الصفات ({{Learn English in the UK}})",
+          items:[
+            { instruction:"اشتق الصفة الصحيحة من الاسم بين القوسين:",
+              q:"All our teachers and other staff members are (qualification) ______.",
+              opts:["qualified","qualification","qualify","qualifying"], correct:0 },
+            { instruction:"اشتق الصفة الصحيحة:",
+              q:"Our (residence) ______ accommodation includes three meals a day.",
+              opts:["residential","residence","resident","residency"], correct:0 },
+            { instruction:"اشتق الصفة الصحيحة:",
+              q:"There is also an (experience) ______ site manager available at all times.",
+              opts:["experienced","experience","experiencing","experiential"], correct:0 },
+            { instruction:"اشتق الصفة الصحيحة:",
+              q:"All our staff members are really (friend) ______ and will make you feel at home.",
+              opts:["friendly","friend","friendship","friended"], correct:0 }
+          ] },
+        { lesson:8, lessonTitle:"تمارين الدرس 8 — استيعاب رسالة حامد ({{Summer jobs}})",
+          items:[
+            { instruction:"اختر الإجابة الصحيحة حسب الرسالة:",
+              q:"Why did Hamed write to Basim?",
+              opts:["to invite Basim to do a summer job together","to arrange to go camping together","to offer to help Basim with his studies"], correct:0 },
+            { instruction:"صواب أم خطأ حسب الرسالة؟",
+              q:"They have to work every day during the contract.",
+              opts:["False","True"], correct:0 },
+            { instruction:"صواب أم خطأ حسب الرسالة؟",
+              q:"The camp will give them food and a place to sleep for free.",
+              opts:["True","False"], correct:0 },
+            { instruction:"صواب أم خطأ حسب الرسالة؟",
+              q:"Hamed has improved his grades because of Basim's help.",
+              opts:["True","False"], correct:0 }
+          ] },
+        { lesson:9, lessonTitle:"تمارين الدرس 9 — استيعاب مقال المترجمة سميرة",
+          items:[
+            { instruction:"اختر الإجابة الصحيحة حسب النص:",
+              q:"How many students who start an interpreting course finish the course?",
+              opts:["Only 50% of accepted students pass their final exams.","All accepted students pass.","About 90% of them pass.","None of them finish it."], correct:0 },
+            { instruction:"صواب أم خطأ حسب النص؟",
+              q:"A good interpreter follows the news and is well informed on many topics.",
+              opts:["True","False"], correct:0 },
+            { instruction:"صواب أم خطأ حسب النص؟",
+              q:"Conference interpreters must translate each word literally.",
+              opts:["False","True"], correct:0 },
+            { instruction:"صواب أم خطأ حسب النص؟",
+              q:"Interpreters must have three active languages.",
+              opts:["False","True"], correct:0,
+              note:"النص يذكر أن سميرة لغتها الفعالة الأساسية هي العربية فقط، وأحياناً نادرة تترجم للإنكليزية — وليس ثلاث لغات." }
+          ] }
+      ],
+
+      quiz: [
+        { instruction:"أكمل الفراغ بالصيغة الصحيحة:",
+          q:"If people don't get enough rest, they ______ tired the next day.",
+          opts:["feel","feels","felt","will feel"], correct:0 },
+        { instruction:"أكمل الفراغ بالصيغة الصحيحة:",
+          q:"We won't arrive on time unless we ______ the next bus.",
+          opts:["take","took","will take","are taking"], correct:0 },
+        { instruction:"اختر الجملة الصحيحة:",
+          q:"Which sentence uses the second conditional correctly?",
+          opts:["If I were you, I'd explain what happened to the teacher.","If I am you, I'd explain what happened to the teacher.","If I was you, I explain what happened to the teacher.","If I were you, I explained what happened to the teacher."], correct:0 },
+        { instruction:"اختر السؤال المنقول الصحيح:",
+          q:"'What is the homework for today?' Aysha asked. → Aysha asked me ______",
+          opts:["what the homework for today was.","what was the homework for today.","what is the homework for today.","what the homework for today is."], correct:0 },
+        { instruction:"اختر التعبير الصحيح عن الندم:",
+          q:"I forgot Muna's birthday, and now she's mad at me. → I wish ______",
+          opts:["I hadn't forgotten Muna's birthday.","I didn't forget Muna's birthday.","I don't forget Muna's birthday.","I wouldn't forget Muna's birthday."], correct:0 },
+        { instruction:"اختر الصيغة الصحيحة — {{Third Conditional}}:",
+          q:"What ______ have done if nobody had come to rescue you?",
+          opts:["would you","did you","will you","do you"], correct:0 },
+        { instruction:"أكمل الفراغ بالكلمة المناسبة:",
+          q:"To be an interpreter, you should do a degree in a language and then a postgraduate ______ in interpreting.",
+          opts:["diploma","conference","stress","translation"], correct:0 },
+        { instruction:"اختر الجملة الصحيحة:",
+          q:"Which sentence is correct?",
+          opts:["What do you call a person who designs buildings? An architect.","What do you call a person designs buildings? An architect.","What do you call a person who design buildings? An architect.","What you call a person who designs buildings? An architect."], correct:0 }
+      ],
+      examModels: [
+        { instruction:"اختر الإجابة الصحيحة:",
+          q:"If you go to bed now, you ______ better in the morning.",
+          opts:["'ll probably feel","probably feel","felt","would feel"], correct:0 },
+        { instruction:"اختر الإجابة الصحيحة:",
+          q:"What would you buy first if you ______ a million pounds?",
+          opts:["won","win","had won","will win"], correct:0 },
+        { instruction:"اختر الإجابة الصحيحة:",
+          q:"What would we have done if our car ______ down in the desert?",
+          opts:["had broken","broke","breaks","would break"], correct:0 },
+        { instruction:"اختر الإجابة الصحيحة:",
+          q:"I won't help Reema with her Maths if she ______ me her camera.",
+          opts:["doesn't lend","won't lend","didn't lend","hadn't lent"], correct:0 },
+        { instruction:"اكتب الندم الصحيح: {{You drank a lot of coffee. Now you are in bed, and you can't sleep.}}",
+          q:"Which sentence correctly expresses regret?",
+          opts:["I wish I hadn't drunk so much coffee.","I wish I didn't drink so much coffee.","I wish I don't drink so much coffee.","I wish I wouldn't drink so much coffee."], correct:0 },
+        { instruction:"أعد الصياغة بكلام منقول: {{'Will you be free to play in the match next Saturday?' the football coach asked.}}",
+          q:"The football coach asked me ______",
+          opts:["if I would be free to play in the match the following Saturday.","if I will be free to play in the match next Saturday.","would I be free to play in the match next Saturday.","if I am free to play in the match next Saturday."], correct:0 }
+      ]
     }
 
   };
-  var UNIT_ORDER = ["health","law"];
+  var UNIT_ORDER = ["health","law","jobs"];
 
   function loadUnit(key){
     var u = UNITS[key];
