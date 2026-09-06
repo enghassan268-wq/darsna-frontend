@@ -45,6 +45,10 @@
     --role-target:#8E2323;
     --violet:#6A3E9C;
     --violet-soft:#EFE7F7;
+    --role-suffix:#0C7A40;
+    --role-suffix-soft:#E6F4EC;
+    --role-change:#C2410C;
+    --role-change-soft:#FCEAE2;
     --shadow: 0 1px 2px rgba(27,42,74,.06), 0 6px 20px -8px rgba(27,42,74,.18);
   }
   @media (prefers-color-scheme: dark){
@@ -71,6 +75,10 @@
       --role-target:#E2726B;
       --violet:#B79EDE;
       --violet-soft:#2A2038;
+      --role-suffix:#4ADE80;
+      --role-suffix-soft:#173226;
+      --role-change:#FDBA74;
+      --role-change-soft:#3A2314;
       --shadow: 0 1px 2px rgba(0,0,0,.3), 0 10px 30px -10px rgba(0,0,0,.5);
     }
   }
@@ -97,6 +105,10 @@
     --role-target:#E2726B;
     --violet:#B79EDE;
     --violet-soft:#2A2038;
+    --role-suffix:#4ADE80;
+    --role-suffix-soft:#173226;
+    --role-change:#FDBA74;
+    --role-change-soft:#3A2314;
     --shadow: 0 1px 2px rgba(0,0,0,.3), 0 10px 30px -10px rgba(0,0,0,.5);
   }
 
@@ -302,8 +314,8 @@
   .role-subject{ color:var(--role-subject); font-weight:700; }
   .role-verb{ color:var(--role-verb); font-weight:700; }
   .role-target{ color:var(--role-target); font-weight:700; }
-  .role-suffix{ color:var(--teal); font-weight:700; }
-  .role-change{ color:var(--violet); font-weight:700; text-decoration:underline; text-decoration-style:dotted; text-underline-offset:3px; }
+  .role-suffix{ color:var(--role-suffix); font-weight:700; }
+  .role-change{ color:var(--role-change); font-weight:700; text-decoration:underline; text-decoration-style:dotted; text-underline-offset:3px; }
   .note-hl{ color:var(--gold); font-weight:700; }
 
   .spelling-rule{ margin-bottom:16px; padding-bottom:14px; border-bottom:1px dashed var(--line); }
