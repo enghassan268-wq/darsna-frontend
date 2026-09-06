@@ -456,6 +456,25 @@
   }
   .dev-empty{ color:var(--ink-soft); font-size:14px; padding:10px 2px; }
 
+  /* Phase 7b: AI weakness-coach -- gold accent (not teal) so it visually
+     reads as "the smart add-on", distinct from the plain Activity Book
+     practice buttons/panels above it, while staying inside the existing
+     navy/gold identity rather than introducing a new color. */
+  .ai-coach-panel{ margin-top:16px; padding-top:16px; border-top:1px dashed var(--line); }
+  .ai-coach-panel .dev-practice-btn{ border-color:var(--gold); color:var(--gold); }
+  .ai-coach-panel .dev-practice-btn:hover{ background:var(--gold-soft); }
+  .ai-coach-result{ margin-top:12px; }
+  .ai-coach-explanation{
+    background:var(--gold-soft); border-inline-start:4px solid var(--gold);
+    border-radius:10px; padding:13px 16px; font-size:14.5px; line-height:1.9; margin-bottom:12px;
+  }
+  .ai-coach-examples, .ai-coach-tips{ margin:0 0 14px; padding-inline-start:22px; font-size:14px; line-height:1.9; }
+  .ai-coach-examples li, .ai-coach-tips li{ margin-bottom:6px; }
+  .ai-coach-compare{
+    margin:12px 0; padding:10px 14px; border:1px solid var(--line); border-radius:10px;
+    font-size:14px; font-weight:600; background:var(--navy-soft);
+  }
+
   @media (max-width:640px){
     .topbar{ flex-wrap:wrap; padding:12px 16px; }
     .crumb{ display:none; }
@@ -1706,6 +1725,24 @@
         return apiGet("/api/development-exercises?schoolId=" + encodeURIComponent(sid) + "&studentId=" + encodeURIComponent(studentId)).then(function(res){
           return (res && res.exercises) || [];
         });
+      },
+      // Phase 7b: real AI-generated coaching for one weak topic (explanation +
+      // new examples + new questions + tips), built server-side from this
+      // student's own real error history for that skill (never invented
+      // client-side). Rejects with a distinguishable error when the school's
+      // backend has no ANTHROPIC_API_KEY configured yet, so the UI can show
+      // "not available yet" instead of a broken screen — see openPracticeFor().
+      getAiCoachPlan: function(studentId, skillId, topic){
+        var sid = getSchoolId();
+        if (!sid) return Promise.reject(new Error("no schoolId — is this device licensed?"));
+        return apiPost("/api/development/ai-coach", { schoolId: sid, studentId: studentId, skillId: skillId, topic: topic }).then(function(res){
+          if (res && res.error){
+            var err = new Error(res.error);
+            err.retryAt = res.retryAt || null; // carried through for ai_coach_cooldown — see openPracticeFor()
+            throw err;
+          }
+          return res.plan;
+        });
       }
     };
   }
@@ -2010,7 +2047,7 @@
         card.appendChild(el("span","dev-badge " + m.cls, m.label));
         if (m.cls !== "strong"){
           var practiceBtn = el("button","dev-practice-btn","تدرّب الآن");
-          practiceBtn.onclick = function(){ openPracticeFor(row.skillId, row.topic); };
+          practiceBtn.onclick = function(){ openPracticeFor(row.skillId, row.topic, row.pct); };
           card.appendChild(practiceBtn);
         }
         devWeaknessHost.appendChild(card);
@@ -2037,7 +2074,7 @@
   // Book items from that same lesson (beyond the ones already used inside
   // the checkpoint itself where possible), rendered inline right under the
   // weakness card the student clicked, using the same quiz-q/opts pattern.
-  function openPracticeFor(skillId, topicTitleMarked){
+  function openPracticeFor(skillId, topicTitleMarked, beforePct){
     var found = null;
     UNIT_ORDER.forEach(function(key){
       (UNITS[key].activities || []).forEach(function(group){
@@ -2089,8 +2126,147 @@
     });
     host.appendChild(qhost);
     host.appendChild(pill);
+
+    // Phase 7b: real AI-generated coaching, additive alongside the fixed
+    // Activity Book practice above -- never replaces it. Built server-side
+    // from this student's own real error history for this exact skill
+    // (backend/ai-coach), so it costs nothing and shows nothing when the
+    // school's backend has no ANTHROPIC_API_KEY configured yet.
+    var aiSection = el("div","panel ai-coach-panel");
+    var aiBtn = el("button","dev-practice-btn","شرح وتمارين إضافية بالذكاء الاصطناعي");
+    var aiResultHost = el("div","ai-coach-result");
+    aiSection.appendChild(aiBtn);
+    aiSection.appendChild(aiResultHost);
+    aiBtn.onclick = function(){
+      if (aiBtn.disabled) return;
+      var sid = getStudentId();
+      if (!sid || !Repo){ showToast("تعذّر الوصول لهذه الميزة الآن."); return; }
+      aiBtn.disabled = true;
+      aiBtn.textContent = "جارٍ التحضير…";
+      aiResultHost.innerHTML = "";
+      Repo.getAiCoachPlan(sid, skillId, found.group.lessonTitle).then(function(plan){
+        aiSection.removeChild(aiBtn);
+        renderAiCoachPlan(aiResultHost, plan, skillId, found, beforePct);
+      })["catch"](function(err){
+        aiBtn.disabled = false;
+        aiBtn.textContent = "شرح وتمارين إضافية بالذكاء الاصطناعي";
+        var msg;
+        if (err && err.message === "ai_coach_not_configured"){
+          msg = "الميزة الذكية غير مفعّلة على هذه النسخة حالياً.";
+        } else if (err && err.message === "ai_coach_cooldown"){
+          var retryAt = err.retryAt ? new Date(err.retryAt) : null;
+          var retryStr = retryAt ? retryAt.toLocaleString("ar-IQ") : "لاحقاً";
+          msg = "استخدمت هذا التمرين الذكي لهذا الموضوع مؤخراً — يمكنك إعادة توليده بعد " + retryStr + ". هذا الحد يحمي من استهلاك غير ضروري للخدمة الذكية.";
+        } else {
+          msg = "تعذّر تحضير الشرح الذكي الآن — حاول لاحقاً.";
+        }
+        aiResultHost.innerHTML = "";
+        aiResultHost.appendChild(el("p","dev-empty", msg));
+      });
+    };
+    host.appendChild(aiSection);
+
     devWeaknessHost.appendChild(host);
     host.scrollIntoView({ behavior:"smooth", block:"nearest" });
+  }
+
+  // Renders one AI-generated weakness-coaching plan (explanation + examples
+  // + brand-new practice questions + tips) into `host`. Every Arabic-with-
+  // English-terms field goes through appendMixed() so the model's {{}}/[[]]
+  // output renders with the platform's normal chip styling -- the model was
+  // instructed to use this exact convention, but nothing here trusts that
+  // blindly: appendMixed() degrades to plain text for any field that
+  // doesn't contain the markup, it never throws.
+  function renderAiCoachPlan(host, plan, skillId, found, beforePct){
+    var expEl = el("div","ai-coach-explanation");
+    appendMixed(expEl, plan.explanation || "");
+    host.appendChild(expEl);
+
+    if (plan.examples && plan.examples.length){
+      var exTitle = el("div","concept-label","أمثلة إضافية:");
+      host.appendChild(exTitle);
+      var exList = el("ul","ai-coach-examples");
+      plan.examples.forEach(function(ex){
+        var li = document.createElement("li");
+        appendMixed(li, ex);
+        exList.appendChild(li);
+      });
+      host.appendChild(exList);
+    }
+
+    var qResults = { score: 0, answered: 0 };
+    if (plan.questions && plan.questions.length){
+      var qTitle = el("div","concept-label","أسئلة تطويرية جديدة:");
+      host.appendChild(qTitle);
+      var pill = el("div","score-pill","");
+      pill.style.display = "none";
+      plan.questions.forEach(function(item){
+        var block = el("div","quiz-q");
+        var qEl = el("div","qtext en-cell");
+        appendMixed(qEl, item.q || "");
+        block.appendChild(qEl);
+        var opts = el("div","opts");
+        (item.opts || []).forEach(function(optText, oi){
+          var b = el("button","opt", optText);
+          b.onclick = function(){
+            if (b.disabled) return;
+            opts.querySelectorAll(".opt").forEach(function(s){ s.disabled = true; });
+            if (oi === item.correct){ b.classList.add("correct"); qResults.score++; }
+            else {
+              b.classList.add("wrong");
+              var correctBtn = opts.querySelectorAll(".opt")[item.correct];
+              if (correctBtn) correctBtn.classList.add("correct");
+            }
+            qResults.answered++;
+            pill.style.display = "inline-flex";
+            pill.textContent = "النتيجة: " + qResults.score + " من " + qResults.answered;
+            if (qResults.answered === plan.questions.length){
+              if (Repo){
+                var sid = getStudentId();
+                if (sid) Repo.saveDevelopmentExercise({
+                  studentId: sid, skillId: skillId, topic: (found && found.group.lessonTitle) || skillId,
+                  sourceRefs: [{ aiGenerated: true, skillId: skillId }],
+                  score: qResults.score, total: plan.questions.length
+                });
+              }
+              // The "before -> after" moment Hassan asked for: compare the
+              // original weak-topic percentage (from the real Checkpoint
+              // history, passed in as beforePct) against the score on these
+              // brand-new AI questions, right where the student can see it,
+              // immediately after finishing them -- not a separate screen.
+              var afterPct = plan.questions.length ? Math.round((qResults.score / plan.questions.length) * 100) : 0;
+              var compareEl = el("div","ai-coach-compare");
+              if (typeof beforePct === "number"){
+                var improved = afterPct >= beforePct;
+                compareEl.innerHTML =
+                  "قبل التقوية: <b>" + beforePct + "٪</b> — بعد التقوية الآن: <b style=\"color:" +
+                  (improved ? "var(--good)" : "var(--bad)") + "\">" + afterPct + "٪</b>" +
+                  (improved ? " — تحسّن ملحوظ، أحسنت." : " — ما زال هذا الموضوع يحتاج مراجعة إضافية.");
+              } else {
+                compareEl.textContent = "نتيجتك في هذه التمارين الجديدة: " + afterPct + "٪.";
+              }
+              host.insertBefore(compareEl, pill);
+            }
+          };
+          opts.appendChild(b);
+        });
+        block.appendChild(opts);
+        host.appendChild(block);
+      });
+      host.appendChild(pill);
+    }
+
+    if (plan.tips && plan.tips.length){
+      var tipsTitle = el("div","concept-label","نصائح تطويرية:");
+      host.appendChild(tipsTitle);
+      var tipsList = el("ul","ai-coach-tips");
+      plan.tips.forEach(function(tip){
+        var li = document.createElement("li");
+        appendMixed(li, tip);
+        tipsList.appendChild(li);
+      });
+      host.appendChild(tipsList);
+    }
   }
 
   // ================================================================
